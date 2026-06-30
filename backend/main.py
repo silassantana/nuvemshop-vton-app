@@ -1,9 +1,15 @@
 """
 VTON backend proxy + static file server.
-- POST /api/tryon  — proxies to Replicate, keeps token server-side
-- GET  /widget/*   — serves the try-on widget (tryon-widget/)
-- GET  /app/*      — serves the NubeSDK bundle (dist/)
-Deploy on Railway; set REPLICATE_API_TOKEN env var.
+
+Inference routing (checked in order):
+  1. TRYON_ENDPOINT_URL is set  → forward multipart to that URL (Modal, any FastAPI-compatible endpoint)
+  2. REPLICATE_API_TOKEN is set → call Replicate synchronous predictions API
+
+Static routes:
+  GET /widget/*  → tryon-widget/
+  GET /app/*     → dist/  (NubeSDK bundle)
+
+Deploy on Railway; set TRYON_ENDPOINT_URL for Modal or REPLICATE_API_TOKEN for Replicate.
 """
 
 import os
@@ -21,23 +27,38 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten to Nuvemshop store origins before production
+    allow_origins=["*"],
     allow_methods=["POST", "GET"],
     allow_headers=["*"],
 )
 
-REPLICATE_API_TOKEN = os.environ["REPLICATE_API_TOKEN"]
+# ── Inference backend config ───────────────────────────────────────────────────
+
+TRYON_ENDPOINT_URL = os.environ.get("TRYON_ENDPOINT_URL")  # e.g. Modal web endpoint
+
+REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN")
 REPLICATE_MODEL_VERSION = os.environ.get(
     "REPLICATE_MODEL_VERSION",
     "a10ae1ae726e5050a961e056e65cb84a576f308528c50993a6d3800d1a2ec162",
 )
 REPLICATE_API_URL = "https://api.replicate.com/v1/predictions"
 
+if not TRYON_ENDPOINT_URL and not REPLICATE_API_TOKEN:
+    import warnings
+    warnings.warn(
+        "Neither TRYON_ENDPOINT_URL nor REPLICATE_API_TOKEN is set — "
+        "/api/tryon will return 503 until one is configured."
+    )
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
 def to_data_uri(data: bytes, content_type: str) -> str:
     b64 = base64.b64encode(data).decode()
     return f"data:{content_type};base64,{b64}"
 
+
+# ── Inference routes ───────────────────────────────────────────────────────────
 
 @app.post("/api/tryon")
 async def tryon(
@@ -46,7 +67,51 @@ async def tryon(
     category: str = Form("tops"),
 ):
     person_bytes = await person_image.read()
-    person_uri = to_data_uri(person_bytes, person_image.content_type or "image/jpeg")
+
+    if TRYON_ENDPOINT_URL:
+        return await _call_modal(person_bytes, person_image.content_type, garment_url, category)
+    elif REPLICATE_API_TOKEN:
+        return await _call_replicate(person_bytes, person_image.content_type, garment_url, category)
+    else:
+        raise HTTPException(status_code=503, detail="No inference backend configured")
+
+
+async def _call_modal(
+    person_bytes: bytes,
+    content_type: str | None,
+    garment_url: str,
+    category: str,
+) -> dict:
+    """Forward multipart to the Modal FastAPI endpoint."""
+    async with httpx.AsyncClient(timeout=300.0) as client:
+        resp = await client.post(
+            f"{TRYON_ENDPOINT_URL.rstrip('/')}/api/tryon",
+            files={"person_image": (
+                "person.jpg",
+                person_bytes,
+                content_type or "image/jpeg",
+            )},
+            data={"garment_url": garment_url, "category": category},
+        )
+
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Modal error: {resp.text}")
+
+    data = resp.json()
+    if "result_url" not in data:
+        raise HTTPException(status_code=502, detail="Unexpected response from Modal endpoint")
+
+    return data
+
+
+async def _call_replicate(
+    person_bytes: bytes,
+    content_type: str | None,
+    garment_url: str,
+    category: str,
+) -> dict:
+    """Call Replicate synchronous predictions API."""
+    person_uri = to_data_uri(person_bytes, content_type or "image/jpeg")
 
     # Fetch garment server-side — avoids CORS issues from the widget
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -68,7 +133,7 @@ async def tryon(
     headers = {
         "Authorization": f"Token {REPLICATE_API_TOKEN}",
         "Content-Type": "application/json",
-        "Prefer": "wait",  # synchronous — waits up to 60s
+        "Prefer": "wait",
     }
 
     async with httpx.AsyncClient(timeout=120.0) as client:
@@ -89,12 +154,16 @@ async def tryon(
     return {"result_url": result_url}
 
 
+# ── Health ─────────────────────────────────────────────────────────────────────
+
 @app.get("/health")
 def health():
-    return {"ok": True}
+    backend = "modal" if TRYON_ENDPOINT_URL else ("replicate" if REPLICATE_API_TOKEN else "none")
+    return {"ok": True, "backend": backend}
 
 
-# Mount static files last so API routes take priority
+# ── Static files (mount last so API routes take priority) ─────────────────────
+
 widget_dir = BASE / "tryon-widget"
 dist_dir = BASE / "dist"
 

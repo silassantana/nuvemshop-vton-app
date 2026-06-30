@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Experimentar</title>
+  <link rel="stylesheet" href="widget.css" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- Collapsed state: just the trigger button -->
+    <button id="trigger-btn" type="button">👗 Experimentar esta peça</button>
+
+    <!-- Expanded state: full widget body (hidden until trigger clicked) -->
+    <div id="widget-body" style="display:none">
+
+      <!-- Garment preview -->
+      <div id="garment-section" style="display:none; margin-bottom:16px">
+        <img id="garment-img" alt="Peça selecionada" style="width:100%; max-height:260px; object-fit:contain; border-radius:8px" />
+      </div>
+
+      <!-- Photo upload / camera -->
+      <div class="upload-area">
+        <input
+          type="file"
+          id="person-input"
+          accept="image/*"
+          capture="environment"
+        />
+        <div class="icon">📷</div>
+        <p>Toque para tirar uma foto ou escolher da galeria</p>
+      </div>
+
+      <img id="preview-img" alt="Sua foto" style="display:none; width:100%; max-height:260px; object-fit:contain; border-radius:8px; margin-top:12px" />
+
+      <button id="submit-btn" type="button">Experimentar</button>
+
+      <!-- Loading -->
+      <div id="loading" style="display:none">
+        <div class="spinner"></div>
+        <p>
+          Processando…<br />
+          <small>A primeira tentativa pode levar alguns segundos a mais.</small>
+        </p>
+      </div>
+
+      <!-- Error -->
+      <div id="error-msg" role="alert" style="display:none"></div>
+
+      <!-- Result -->
+      <div id="result-section" style="display:none; margin-top:16px">
+        <img id="result-img" alt="Resultado do try-on" style="width:100%; border-radius:8px" />
+        <p style="margin-top:8px; font-size:13px; color:#555; text-align:center">Aqui está você com a peça! 👆</p>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="widget.js"></script>
+</body>
+</html>

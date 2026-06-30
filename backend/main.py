@@ -79,34 +79,25 @@ async def tryon(
         # Immediate event so Railway/nginx doesn't 502 on slow cold starts
         yield f"data: {json.dumps({'status': 'processing'})}\n\n"
 
-        result: dict = {}
-        done = asyncio.Event()
-
-        async def run():
-            try:
-                if TRYON_ENDPOINT_URL:
-                    result['ok'] = await _call_modal(person_bytes, content_type, garment_url, category)
-                else:
-                    result['ok'] = await _call_replicate(person_bytes, content_type, garment_url, category)
-            except HTTPException as exc:
-                result['error'] = exc.detail
-            except Exception as exc:
-                result['error'] = str(exc)
-            finally:
-                done.set()
-
-        asyncio.create_task(run())
-
-        # Keepalive every 5 s while inference runs (resets Railway's 60s timeout)
-        while not done.is_set():
-            await asyncio.sleep(5)
-            if not done.is_set():
-                yield f"data: {json.dumps({'status': 'processing'})}\n\n"
-
-        if 'error' in result:
-            yield f"data: {json.dumps({'status': 'error', 'detail': result['error']})}\n\n"
+        if TRYON_ENDPOINT_URL:
+            fut = asyncio.ensure_future(_call_modal(person_bytes, content_type, garment_url, category))
         else:
-            yield f"data: {json.dumps({'status': 'done', 'result_url': result['ok']['result_url']})}\n\n"
+            fut = asyncio.ensure_future(_call_replicate(person_bytes, content_type, garment_url, category))
+
+        try:
+            while True:
+                try:
+                    # Wait up to 5 s; shield protects fut from being cancelled on timeout
+                    data = await asyncio.wait_for(asyncio.shield(fut), timeout=5.0)
+                    yield f"data: {json.dumps({'status': 'done', 'result_url': data['result_url']})}\n\n"
+                    return
+                except asyncio.TimeoutError:
+                    # Keepalive resets Railway's 60s proxy timeout
+                    yield f"data: {json.dumps({'status': 'processing'})}\n\n"
+        except Exception as exc:
+            fut.cancel()
+            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            yield f"data: {json.dumps({'status': 'error', 'detail': detail})}\n\n"
 
     return StreamingResponse(
         stream(),

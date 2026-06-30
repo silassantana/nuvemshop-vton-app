@@ -30,7 +30,7 @@ function clearError() {
 function setLoading(on) {
   document.getElementById("loading").style.display = on ? "block" : "none";
   document.getElementById("submit-btn").disabled = on;
-  document.getElementById("result-section").style.display = "none";
+  if (on) document.getElementById("result-section").style.display = "none";
   clearError();
   postHeight();
 }
@@ -118,8 +118,8 @@ document.getElementById("submit-btn").addEventListener("click", async () => {
     const resultImg = document.getElementById("result-img");
     resultImg.src = data.result_url;
     resultImg.onload = () => {
-      resultSection.style.display = "block";
       setLoading(false);
+      resultSection.style.display = "block";
       postHeight();
     };
     resultImg.onerror = () => {

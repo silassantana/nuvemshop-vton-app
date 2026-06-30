@@ -5,17 +5,21 @@ import { box, iframe, text } from "@tiendanube/nube-sdk-ui";
 const WIDGET_BASE_URL: string = import.meta.env.VITE_WIDGET_URL ?? "https://PLACEHOLDER.railway.app";
 
 export function App(nube: NubeSDK) {
+  console.log("[VTON] App loaded, WIDGET_BASE_URL:", WIDGET_BASE_URL);
   nube.on("page:loaded", (state) => {
+    console.log("[VTON] page:loaded fired, page type:", state.location.page.type);
     const page = state.location.page;
 
     if (page.type !== "product") return;
 
     const product = page.data.product;
-    const garmentUrl = product.images[0]?.src ?? null;
+    console.log("[VTON] product:", product.name, "tags:", product.tags, "images:", product.images?.length);
+    const garmentUrl = product.images?.[0]?.src ?? null;
 
-    if (!garmentUrl) return;
+    if (!garmentUrl) { console.log("[VTON] no garment URL, aborting"); return; }
 
     const category = inferCategory(product.tags);
+    console.log("[VTON] rendering iframe, category:", category);
 
     // Build iframe src with garment URL as query param so the widget
     // can read it on load (no postMessage needed for initial data).
@@ -51,8 +55,8 @@ export function App(nube: NubeSDK) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function inferCategory(tags: string): "tops" | "bottoms" | "one-pieces" {
-  const t = tags.toLowerCase();
+function inferCategory(tags: string | null | undefined): "tops" | "bottoms" | "one-pieces" {
+  const t = (tags ?? "").toLowerCase();
   if (t.includes("calça") || t.includes("short") || t.includes("saia") || t.includes("bottom")) {
     return "bottoms";
   }

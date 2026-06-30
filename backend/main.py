@@ -12,6 +12,8 @@ Static routes:
 Deploy on Railway; set TRYON_ENDPOINT_URL for Modal or REPLICATE_API_TOKEN for Replicate.
 """
 
+import asyncio
+import json
 import os
 from pathlib import Path
 
@@ -19,6 +21,7 @@ import base64
 import httpx
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 BASE = Path(__file__).parent.parent  # repo root
@@ -66,14 +69,50 @@ async def tryon(
     garment_url: str = Form(...),
     category: str = Form("tops"),
 ):
-    person_bytes = await person_image.read()
-
-    if TRYON_ENDPOINT_URL:
-        return await _call_modal(person_bytes, person_image.content_type, garment_url, category)
-    elif REPLICATE_API_TOKEN:
-        return await _call_replicate(person_bytes, person_image.content_type, garment_url, category)
-    else:
+    if not TRYON_ENDPOINT_URL and not REPLICATE_API_TOKEN:
         raise HTTPException(status_code=503, detail="No inference backend configured")
+
+    person_bytes = await person_image.read()
+    content_type = person_image.content_type
+
+    async def stream():
+        # Immediate event so Railway/nginx doesn't 502 on slow cold starts
+        yield f"data: {json.dumps({'status': 'processing'})}\n\n"
+
+        result: dict = {}
+        done = asyncio.Event()
+
+        async def run():
+            try:
+                if TRYON_ENDPOINT_URL:
+                    result['ok'] = await _call_modal(person_bytes, content_type, garment_url, category)
+                else:
+                    result['ok'] = await _call_replicate(person_bytes, content_type, garment_url, category)
+            except HTTPException as exc:
+                result['error'] = exc.detail
+            except Exception as exc:
+                result['error'] = str(exc)
+            finally:
+                done.set()
+
+        asyncio.create_task(run())
+
+        # Keepalive every 5 s while inference runs (resets Railway's 60s timeout)
+        while not done.is_set():
+            await asyncio.sleep(5)
+            if not done.is_set():
+                yield f"data: {json.dumps({'status': 'processing'})}\n\n"
+
+        if 'error' in result:
+            yield f"data: {json.dumps({'status': 'error', 'detail': result['error']})}\n\n"
+        else:
+            yield f"data: {json.dumps({'status': 'done', 'result_url': result['ok']['result_url']})}\n\n"
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 async def _call_modal(

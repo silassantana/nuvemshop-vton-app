@@ -99,7 +99,7 @@ document.getElementById("submit-btn").addEventListener("click", async () => {
   try {
     const formData = new FormData();
     formData.append("person_image", personFile);
-    formData.append("garment_url", garmentUrl); // backend fetches it server-side
+    formData.append("garment_url", garmentUrl);
     formData.append("category", category);
 
     const resp = await fetch(`${BACKEND_URL}/api/tryon`, {
@@ -112,20 +112,44 @@ document.getElementById("submit-btn").addEventListener("click", async () => {
       throw new Error(err.detail || `Erro no servidor (${resp.status})`);
     }
 
-    const data = await resp.json();
+    // Consume SSE stream — backend sends keepalives every 5s then the result
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
 
-    const resultSection = document.getElementById("result-section");
-    const resultImg = document.getElementById("result-img");
-    resultImg.src = data.result_url;
-    resultImg.onload = () => {
-      setLoading(false);
-      resultSection.style.display = "block";
-      postHeight();
-    };
-    resultImg.onerror = () => {
-      setLoading(false);
-      showError("Não foi possível exibir o resultado. Tente novamente.");
-    };
+    outer: while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        let event;
+        try { event = JSON.parse(line.slice(6)); } catch { continue; }
+
+        if (event.status === "done") {
+          const resultSection = document.getElementById("result-section");
+          const resultImg = document.getElementById("result-img");
+          resultImg.src = event.result_url;
+          resultImg.onload = () => {
+            setLoading(false);
+            resultSection.style.display = "block";
+            postHeight();
+          };
+          resultImg.onerror = () => {
+            setLoading(false);
+            showError("Não foi possível exibir o resultado. Tente novamente.");
+          };
+          break outer;
+        } else if (event.status === "error") {
+          throw new Error(event.detail || "Erro no servidor");
+        }
+        // "processing" keepalives — already showing spinner, nothing to do
+      }
+    }
   } catch (err) {
     setLoading(false);
     showError(err.message || "Algo deu errado. Por favor, tente novamente.");
